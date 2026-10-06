@@ -1,0 +1,9 @@
+com\example\jmeter\aireport\StatsCollector.class
+com\example\jmeter\aireport\JtlReportCli.class
+com\example\jmeter\aireport\StatsCollector$Slice.class
+com\example\jmeter\aireport\ReportWriter.class
+com\example\jmeter\aireport\StatsCollector$Agg.class
+com\example\jmeter\aireport\AiReportListener.class
+com\example\jmeter\aireport\StatsCollector$Histogram.class
+com\example\jmeter\aireport\AiReportListenerGui.class
+com\example\jmeter\aireport\StatsCollector$Err.class
