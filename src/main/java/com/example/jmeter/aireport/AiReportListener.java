@@ -61,6 +61,7 @@ public class AiReportListener extends AbstractListenerElement
         try {
             SampleResult r = e.getResult();
             StatsCollector c = col();
+            String group = StatsCollector.groupOf(r.getThreadName());
             boolean tx = r.getSubResults().length > 0
                     || (r.getResponseMessage() != null && r.getResponseMessage().startsWith("Number of samples in transaction"));
             String code = r.getResponseCode();
@@ -71,15 +72,15 @@ public class AiReportListener extends AbstractListenerElement
                 for (AssertionResult ar : r.getAssertionResults())
                     if (ar.isFailure() || ar.isError()) fm.append(ar.getName()).append(": ").append(ar.getFailureMessage()).append("; ");
                 failMsg = fm.toString();
-                if (!tx && !c.errors.containsKey(StatsCollector.errKey(r.getSampleLabel(), code, r.getResponseMessage()))) {
+                if (!tx && !c.errors.containsKey(StatsCollector.errKey(group, r.getSampleLabel(), code, r.getResponseMessage()))) {
                     String body = r.getResponseDataAsString();
                     int n = getSnippetLen();
                     snippet = body == null ? "" : (body.length() > n ? body.substring(0, n) : body);
                 }
             }
-            c.add(r.getSampleLabel(), tx, r.getStartTime(), r.getTime(), r.getLatency(), r.getConnectTime(),
+            c.add(group, r.getSampleLabel(), tx, r.getStartTime(), r.getTime(), r.getLatency(), r.getConnectTime(),
                     r.isSuccessful(), code, r.getResponseMessage(), failMsg, snippet,
-                    r.getBytesAsLong(), r.getSentBytes(), r.getAllThreads());
+                    r.getBytesAsLong(), r.getSentBytes(), r.getAllThreads(), r.getGroupThreads());
         } catch (Exception ex) {
             log.warn("AiReportListener: sample ignored", ex);
         }

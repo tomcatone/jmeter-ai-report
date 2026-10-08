@@ -49,11 +49,11 @@ public class JtlReportCli {
                 try {
                     String msg = get(f, ix, "responseMessage");
                     boolean tx = msg.startsWith("Number of samples in transaction");
-                    c.add(get(f, ix, "label"), tx, lng(get(f, ix, "timeStamp")), lng(get(f, ix, "elapsed")),
+                    c.add(StatsCollector.groupOf(get(f, ix, "threadName")), get(f, ix, "label"), tx, lng(get(f, ix, "timeStamp")), lng(get(f, ix, "elapsed")),
                             lng(get(f, ix, "Latency")), lng(get(f, ix, "Connect")),
                             "true".equalsIgnoreCase(get(f, ix, "success")),
                             get(f, ix, "responseCode"), msg, get(f, ix, "failureMessage"), "",
-                            lng(get(f, ix, "bytes")), lng(get(f, ix, "sentBytes")), (int) lng(get(f, ix, "allThreads")));
+                            lng(get(f, ix, "bytes")), lng(get(f, ix, "sentBytes")), (int) lng(get(f, ix, "allThreads")), (int) lng(get(f, ix, "grpThreads")));
                 } catch (RuntimeException ex) {
                     // 跳過壞行
                 }

@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.LongAdder;
 public class StatsCollector {
 
     public static final int MAX_ERROR_KEYS = 500;
+    /** 每個維度(線程組/接口)最多保留多少條獨立時序,避免接口過多時記憶體膨脹。 */
+    public static final int MAX_SERIES_KEYS = 100;
 
     public final long intervalMs;
     public final LongAccumulator minTs = new LongAccumulator(Math::min, Long.MAX_VALUE);
@@ -22,9 +24,15 @@ public class StatsCollector {
     public final Agg total = new Agg("TOTAL", false);
     public final Map<String, Agg> samplers = new ConcurrentHashMap<>();
     public final Map<String, Agg> transactions = new ConcurrentHashMap<>();
+    /** 線程組/場景維度:整體、各接口、最大線程數。 */
+    public final Map<String, Agg> groups = new ConcurrentHashMap<>();
+    public final Map<String, Map<String, Agg>> groupSamplers = new ConcurrentHashMap<>();
+    public final Map<String, Integer> groupThreads = new ConcurrentHashMap<>();
     public final Map<String, Err> errors = new ConcurrentHashMap<>();
     public final Map<String, LongAdder> codes = new ConcurrentHashMap<>();
     public final ConcurrentSkipListMap<Long, Slice> series = new ConcurrentSkipListMap<>();
+    public final Map<String, ConcurrentSkipListMap<Long, Slice>> groupSeries = new ConcurrentHashMap<>();
+    public final Map<String, ConcurrentSkipListMap<Long, Slice>> labelSeries = new ConcurrentHashMap<>();
 
     public StatsCollector(long intervalMs) {
         this.intervalMs = Math.max(1000, intervalMs);
@@ -32,15 +40,25 @@ public class StatsCollector {
 
     // ---------------------------------------------------------------- API
 
-    public static String errKey(String label, String code, String msg) {
-        String m = msg == null ? "" : (msg.length() > 200 ? msg.substring(0, 200) : msg);
-        return label + "\u0001" + code + "\u0001" + m;
+    /** 線程名格式 "<線程組名> <組序號>-<線程序號>",取出線程組名。 */
+    public static String groupOf(String threadName) {
+        if (threadName == null || threadName.isEmpty()) return "(unknown)";
+        int sp = threadName.lastIndexOf(' ');
+        if (sp > 0 && threadName.substring(sp + 1).matches("\\d+-\\d+")) return threadName.substring(0, sp);
+        return threadName;
     }
 
-    public void add(String label, boolean transaction, long ts, long elapsed, long latency,
+    public static String errKey(String group, String label, String code, String msg) {
+        String m = msg == null ? "" : (msg.length() > 200 ? msg.substring(0, 200) : msg);
+        return group + "\u0001" + label + "\u0001" + code + "\u0001" + m;
+    }
+
+    public void add(String group, String label, boolean transaction, long ts, long elapsed, long latency,
                     long connect, boolean ok, String code, String msg, String failMsg,
-                    String snippet, long bytes, long sent, int threads) {
+                    String snippet, long bytes, long sent, int threads, int grpThreads) {
         code = code == null ? "" : code;
+        if (group == null || group.isEmpty()) group = "(unknown)";
+        final String grp = group;
         long end = ts + elapsed;
         if (threads > maxThreads) maxThreads = threads;
 
@@ -54,20 +72,38 @@ public class StatsCollector {
         total.add(ts, elapsed, latency, connect, ok, bytes, sent);
         samplers.computeIfAbsent(label, l -> new Agg(l, false))
                 .add(ts, elapsed, latency, connect, ok, bytes, sent);
+        groups.computeIfAbsent(grp, g -> new Agg(g, false))
+                .add(ts, elapsed, latency, connect, ok, bytes, sent);
+        groupSamplers.computeIfAbsent(grp, g -> new ConcurrentHashMap<>())
+                .computeIfAbsent(label, l -> new Agg(l, false))
+                .add(ts, elapsed, latency, connect, ok, bytes, sent);
+        groupThreads.merge(grp, grpThreads, Math::max);
         codes.computeIfAbsent(code.isEmpty() ? "(empty)" : code, k -> new LongAdder()).increment();
-        series.computeIfAbsent(ts / intervalMs * intervalMs, k -> new Slice())
-                .add(elapsed, ok, threads, bytes);
+        final long bucket = ts / intervalMs * intervalMs;
+        series.computeIfAbsent(bucket, k -> new Slice()).add(elapsed, ok, threads, bytes);
+        addSeries(groupSeries, grp, bucket, elapsed, ok, threads, bytes);
+        addSeries(labelSeries, label, bucket, elapsed, ok, threads, bytes);
 
         if (!ok) {
-            String key = errKey(label, code, msg);
+            String key = errKey(grp, label, code, msg);
             Err e = errors.get(key);
             if (e == null) {
                 final String fKey = errors.size() >= MAX_ERROR_KEYS ? "OTHER" : key;
                 final String fCode = code;
-                e = errors.computeIfAbsent(fKey, k -> new Err(label, fCode, msg, failMsg, snippet, ts));
+                e = errors.computeIfAbsent(fKey, k -> new Err(grp, label, fCode, msg, failMsg, snippet, ts));
             }
             e.count.increment();
         }
+    }
+
+    private void addSeries(Map<String, ConcurrentSkipListMap<Long, Slice>> m, String key, long bucket,
+                           long elapsed, boolean ok, int threads, long bytes) {
+        ConcurrentSkipListMap<Long, Slice> s = m.get(key);
+        if (s == null) {
+            if (m.size() >= MAX_SERIES_KEYS) return;
+            s = m.computeIfAbsent(key, k -> new ConcurrentSkipListMap<>());
+        }
+        s.computeIfAbsent(bucket, k -> new Slice()).add(elapsed, ok, threads, bytes);
     }
 
     // ----------------------------------------------------------- data types
@@ -92,6 +128,18 @@ public class StatsCollector {
         }
 
         void add(long v) { bins[idx(v)]++; n++; }
+
+        public long total() { return n; }
+
+        /** 響應時間 < v 的樣本數(v 為 ≤2000 的整數,或 ≥2000 時為 10 的倍數,結果精確)。 */
+        public long countLessThan(long v) {
+            long cum = 0;
+            for (int i = 0; i < bins.length; i++) {
+                if (val(i) >= v) break;
+                cum += bins[i];
+            }
+            return cum;
+        }
 
         public long percentile(double p) {
             if (n == 0) return 0;
@@ -159,11 +207,12 @@ public class StatsCollector {
     }
 
     public static final class Err {
-        public final String label, code, message, failureMessage, snippet;
+        public final String group, label, code, message, failureMessage, snippet;
         public final long firstTs;
         public final LongAdder count = new LongAdder();
 
-        Err(String label, String code, String message, String failureMessage, String snippet, long firstTs) {
+        Err(String group, String label, String code, String message, String failureMessage, String snippet, long firstTs) {
+            this.group = group;
             this.label = label;
             this.code = code;
             this.message = message == null ? "" : message;

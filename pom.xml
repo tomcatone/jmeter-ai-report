@@ -24,5 +24,11 @@
       <version>${jmeter.version}</version>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.jmeter</groupId>
+      <artifactId>ApacheJMeter_components</artifactId>
+      <version>${jmeter.version}</version>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 </project>
